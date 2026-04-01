@@ -1,0 +1,176 @@
+name: Build Recovery Artifact
+
+on:
+  workflow_dispatch:
+    inputs:
+      certificate_payloads_glob:
+        description: Glob pattern for required Secure Boot certificate payload files
+        required: false
+        default: recovery/certificates/*.auth
+        type: string
+      update_scripts_glob:
+        description: Glob pattern for required Secure Boot update scripts
+        required: false
+        default: recovery/scripts/*.sh
+        type: string
+      manifest_path:
+        description: Path to required recovery manifest file
+        required: false
+        default: recovery/manifest.json
+        type: string
+      logging_script_path:
+        description: Path to required recovery logging script
+        required: false
+        default: recovery/scripts/log-recovery.sh
+        type: string
+      verification_script_path:
+        description: Path to required recovery verification script
+        required: false
+        default: recovery/scripts/verify-recovery.sh
+        type: string
+      instructions_path:
+        description: Path to required recovery instructions text file
+        required: false
+        default: recovery/RECOVERY-INSTRUCTIONS.txt
+        type: string
+      staging_dir:
+        description: Staging directory used to assemble recovery content
+        required: false
+        default: dist/recovery
+        type: string
+      artifact_name:
+        description: Base name for uploaded artifacts
+        required: false
+        default: recovery-artifact
+        type: string
+      include_iso:
+        description: Attempt to build an ISO artifact when toolchain is available
+        required: false
+        default: true
+        type: boolean
+
+  push:
+    branches:
+      - '**'
+    paths:
+      - recovery/**
+      - .github/workflows/build-recovery-artifact.yml
+
+jobs:
+  build-recovery-artifacts:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate inputs and stage recovery files
+        id: stage
+        shell: bash
+        env:
+          CERTIFICATE_PAYLOADS_GLOB: ${{ github.event_name == 'workflow_dispatch' && inputs.certificate_payloads_glob || 'recovery/certificates/*.auth' }}
+          UPDATE_SCRIPTS_GLOB: ${{ github.event_name == 'workflow_dispatch' && inputs.update_scripts_glob || 'recovery/scripts/*.sh' }}
+          MANIFEST_PATH: ${{ github.event_name == 'workflow_dispatch' && inputs.manifest_path || 'recovery/manifest.json' }}
+          LOGGING_SCRIPT_PATH: ${{ github.event_name == 'workflow_dispatch' && inputs.logging_script_path || 'recovery/scripts/log-recovery.sh' }}
+          VERIFICATION_SCRIPT_PATH: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_script_path || 'recovery/scripts/verify-recovery.sh' }}
+          INSTRUCTIONS_PATH: ${{ github.event_name == 'workflow_dispatch' && inputs.instructions_path || 'recovery/RECOVERY-INSTRUCTIONS.txt' }}
+          STAGING_DIR: ${{ github.event_name == 'workflow_dispatch' && inputs.staging_dir || 'dist/recovery' }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          declare -a cert_files=( ${CERTIFICATE_PAYLOADS_GLOB} )
+          declare -a update_scripts=( ${UPDATE_SCRIPTS_GLOB} )
+
+          if [ ${#cert_files[@]} -eq 0 ]; then
+            echo "::error::Missing certificate payloads. Expected files matching: ${CERTIFICATE_PAYLOADS_GLOB}"
+            exit 1
+          fi
+
+          if [ ${#update_scripts[@]} -eq 0 ]; then
+            echo "::error::Missing update scripts. Expected files matching: ${UPDATE_SCRIPTS_GLOB}"
+            exit 1
+          fi
+
+          required_paths=(
+            "${MANIFEST_PATH}"
+            "${LOGGING_SCRIPT_PATH}"
+            "${VERIFICATION_SCRIPT_PATH}"
+            "${INSTRUCTIONS_PATH}"
+          )
+
+          for path in "${required_paths[@]}"; do
+            if [ ! -f "${path}" ]; then
+              echo "::error file=${path}::Missing required file at expected path: ${path}"
+              exit 1
+            fi
+          done
+
+          rm -rf "${STAGING_DIR}"
+          mkdir -p "${STAGING_DIR}/certificates" "${STAGING_DIR}/scripts"
+
+          cp -v "${MANIFEST_PATH}" "${STAGING_DIR}/manifest.json"
+          cp -v "${INSTRUCTIONS_PATH}" "${STAGING_DIR}/instructions.txt"
+          cp -v "${LOGGING_SCRIPT_PATH}" "${STAGING_DIR}/scripts/"
+          cp -v "${VERIFICATION_SCRIPT_PATH}" "${STAGING_DIR}/scripts/"
+
+          cp -v "${cert_files[@]}" "${STAGING_DIR}/certificates/"
+          cp -v "${update_scripts[@]}" "${STAGING_DIR}/scripts/"
+
+          chmod +x "${STAGING_DIR}/scripts/"*.sh || true
+
+      - name: Create ZIP package
+        id: package_zip
+        shell: bash
+        env:
+          STAGING_DIR: ${{ github.event_name == 'workflow_dispatch' && inputs.staging_dir || 'dist/recovery' }}
+          ARTIFACT_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact_name || 'recovery-artifact' }}
+        run: |
+          set -euo pipefail
+          ZIP_PATH="dist/${ARTIFACT_NAME}.zip"
+          mkdir -p dist
+          (cd "${STAGING_DIR}" && zip -r "../../${ZIP_PATH}" .)
+          echo "zip_path=${ZIP_PATH}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create ISO package (optional)
+        id: package_iso
+        shell: bash
+        env:
+          STAGING_DIR: ${{ github.event_name == 'workflow_dispatch' && inputs.staging_dir || 'dist/recovery' }}
+          ARTIFACT_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact_name || 'recovery-artifact' }}
+          INCLUDE_ISO: ${{ github.event_name == 'workflow_dispatch' && inputs.include_iso || 'true' }}
+        run: |
+          set -euo pipefail
+
+          if [ "${INCLUDE_ISO}" != "true" ]; then
+            echo "ISO creation disabled by input."
+            exit 0
+          fi
+
+          ISO_PATH="dist/${ARTIFACT_NAME}.iso"
+          mkdir -p dist
+
+          if command -v genisoimage >/dev/null 2>&1; then
+            genisoimage -quiet -o "${ISO_PATH}" -V "RECOVERY" "${STAGING_DIR}"
+            echo "iso_path=${ISO_PATH}" >> "${GITHUB_OUTPUT}"
+          elif command -v mkisofs >/dev/null 2>&1; then
+            mkisofs -quiet -o "${ISO_PATH}" -V "RECOVERY" "${STAGING_DIR}"
+            echo "iso_path=${ISO_PATH}" >> "${GITHUB_OUTPUT}"
+          else
+            echo "ISO toolchain not available (genisoimage/mkisofs missing); skipping ISO artifact."
+          fi
+
+      - name: Upload ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ (github.event_name == 'workflow_dispatch' && inputs.artifact_name || 'recovery-artifact') }}-zip
+          path: ${{ steps.package_zip.outputs.zip_path }}
+          if-no-files-found: error
+
+      - name: Upload ISO artifact (if available)
+        if: ${{ steps.package_iso.outputs.iso_path != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ (github.event_name == 'workflow_dispatch' && inputs.artifact_name || 'recovery-artifact') }}-iso
+          path: ${{ steps.package_iso.outputs.iso_path }}
+          if-no-files-found: error
