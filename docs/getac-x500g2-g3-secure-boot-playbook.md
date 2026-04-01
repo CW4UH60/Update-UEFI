@@ -65,10 +65,24 @@ Choose one path per device.
 Use this when Windows is bootable and admin access is available.
 
 1. Complete preconditions above.
-2. Stage approved Secure Boot payloads (`db.auth`, `dbx.auth`, `kek.auth`, optional `pk.auth`) from your controlled source.
-3. Prefer applying through your managed Windows workflow (or maintenance tooling) if your org standard supports online execution.
-4. Reboot and run validation in Windows (see Verification section).
-5. If online apply fails, move to **Path B (offline WinPE)**.
+2. If remediating devices impacted by the 2026 Secure Boot certificate rollout sequencing, run the Microsoft-trigger workflow from an elevated prompt:
+   ```powershell
+   reg add HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Secureboot /v AvailableUpdates /t REG_DWORD /d 0x5944 /f
+   Start-ScheduledTask -TaskName "\Microsoft\Windows\PI\Secure-Boot-Update"
+   ```
+3. Confirm the registry value transitions to `0x4100`, then perform a **manual reboot**.
+4. After reboot, trigger the scheduled task again:
+   ```powershell
+   Start-ScheduledTask -TaskName "\Microsoft\Windows\PI\Secure-Boot-Update"
+   ```
+5. Stage approved Secure Boot payloads (`db.auth`, `dbx.auth`, `kek.auth`, optional `pk.auth`) from your controlled source.
+6. Reboot and run validation in Windows (see Verification section).
+7. If online apply fails, move to **Path B (offline WinPE)**.
+
+Microsoft references for this workflow:
+
+- Registry key updates for Secure Boot Windows devices: <https://support.microsoft.com/en-us/topic/registry-key-updates-for-secure-boot-windows-devices-with-it-managed-updates-a7be69c9-4634-42e1-9ca1-df06f43f360d>
+- Secure Boot playbook for certificates expiring in 2026: <https://techcommunity.microsoft.com/blog/windows-itpro-blog/secure-boot-playbook-for-certificates-expiring-in-2026/4469235>
 
 ## Path B — Offline WinPE boot required
 
@@ -156,9 +170,50 @@ After successful boot to Windows:
 
 ---
 
-## 5) Failure handling, rollback, and escalation
+## 5) Exporting certificates from a known-good Windows machine
 
-## 5.1 Immediate failure actions
+Use a known-good endpoint that has already completed the Microsoft Secure Boot update flow successfully.
+
+1. Open elevated PowerShell and create an export folder:
+   ```powershell
+   New-Item -Path C:\SecureBoot-Cert-Export -ItemType Directory -Force | Out-Null
+   ```
+2. Export candidate certificates from `LocalMachine\CA`, `LocalMachine\Root`, and `LocalMachine\TrustedPublisher`:
+   ```powershell
+   $dest = 'C:\SecureBoot-Cert-Export'
+   $stores = @(
+     'Cert:\LocalMachine\CA',
+     'Cert:\LocalMachine\Root',
+     'Cert:\LocalMachine\TrustedPublisher'
+   )
+
+   foreach ($store in $stores) {
+     $storeName = $store.Split('\')[-1]
+     Get-ChildItem -Path $store | ForEach-Object {
+       $safeThumbprint = $_.Thumbprint -replace '[^A-Fa-f0-9]', ''
+       $outFile = Join-Path $dest ("{0}_{1}.cer" -f $storeName, $safeThumbprint)
+       Export-Certificate -Cert $_ -FilePath $outFile -Type CERT | Out-Null
+     }
+   }
+   ```
+3. Optionally export active UEFI variable payload bytes for engineering comparison:
+   ```powershell
+   $uefiDir = 'C:\SecureBoot-Cert-Export\UEFI-Variables'
+   New-Item -Path $uefiDir -ItemType Directory -Force | Out-Null
+   foreach ($name in 'PK','KEK','db','dbx') {
+     $var = Get-SecureBootUEFI -Name $name
+     [System.IO.File]::WriteAllBytes((Join-Path $uefiDir "$name.bin"), $var.Bytes)
+   }
+   ```
+4. Curate only approved `.cer` files into this repo under `winpe\payload\certs\`.
+5. Generate/update `winpe\payload\manifest.sha256` so every `.auth` and `.cer/.crt` file is represented.
+6. Run `Apply-SecureBootUpdate.ps1 -WhatIf` first to confirm manifest validation before production use.
+
+---
+
+## 6) Failure handling, rollback, and escalation
+
+## 6.1 Immediate failure actions
 
 If apply/verify fails:
 
@@ -167,7 +222,7 @@ If apply/verify fails:
 3. Record exact exit code and failing step.
 4. Reboot to firmware and check whether Secure Boot is left disabled or keys are partially updated.
 
-## 5.2 Controlled rollback options
+## 6.2 Controlled rollback options
 
 Use only organization-approved rollback package/process.
 
@@ -178,7 +233,7 @@ Use only organization-approved rollback package/process.
 
 > Avoid ad hoc key clearing or manual key enrollment unless specifically authorized by platform security engineering.
 
-## 5.3 Escalation criteria
+## 6.3 Escalation criteria
 
 Escalate to endpoint engineering / platform security when any of the following occur:
 
@@ -198,7 +253,7 @@ Include in escalation bundle:
 
 ---
 
-## 6) Model-specific checklist (X500G2 vs X500G3)
+## 7) Model-specific checklist (X500G2 vs X500G3)
 
 Use this checklist during change execution.
 

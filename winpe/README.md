@@ -36,6 +36,29 @@ Place update files under `winpe\payload\`:
 
 `manifest.sha256` must contain SHA-256 entries for **every payload file that may be executed/imported** (all `.auth` files present and any certificate file present).
 
+## Populating `payload\certs` from a working Windows machine
+
+From an elevated PowerShell session on a known-good machine:
+
+```powershell
+$dest = 'C:\SecureBoot-Cert-Export'
+New-Item -Path $dest -ItemType Directory -Force | Out-Null
+
+foreach ($store in 'Cert:\LocalMachine\CA','Cert:\LocalMachine\Root','Cert:\LocalMachine\TrustedPublisher') {
+  $storeName = $store.Split('\')[-1]
+  Get-ChildItem -Path $store | ForEach-Object {
+    $thumb = $_.Thumbprint -replace '[^A-Fa-f0-9]', ''
+    Export-Certificate -Cert $_ -FilePath (Join-Path $dest ("{0}_{1}.cer" -f $storeName, $thumb)) -Type CERT | Out-Null
+  }
+}
+```
+
+Then copy only approved `.cer/.crt` files into `winpe\payload\certs\`, regenerate `manifest.sha256`, and validate with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File X:\Apply-SecureBootUpdate.ps1 -WhatIf
+```
+
 ## Apply script safety controls
 
 ### Dry-run mode
