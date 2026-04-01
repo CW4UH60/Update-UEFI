@@ -1,0 +1,24 @@
+name: Collect WinPE Logs
+
+on:
+  workflow_dispatch:
+
+jobs:
+  collect-logs:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure predictable log folder exists
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path 'X:\SecureBootUpdate\logs' -Force | Out-Null
+          'No runtime logs generated in CI by default.' | Out-File -FilePath 'X:\SecureBootUpdate\logs\README.txt' -Encoding utf8
+
+      - name: Upload WinPE log artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: winpe-secureboot-logs
+          path: X:\SecureBootUpdate\logs\
+          if-no-files-found: warn

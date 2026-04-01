@@ -5,20 +5,56 @@ This folder contains WinPE startup and remediation scripts for applying Secure B
 ## Contents
 
 - `StartNet.cmd` - Initializes WinPE and launches remediation automatically.
-- `Apply-SecureBootUpdate.ps1` - Detects firmware/Secure Boot state, applies signed update payloads, and writes detailed logs + state file.
+- `Apply-SecureBootUpdate.ps1` - Detects firmware/Secure Boot state, requires manifest-backed payload validation, enforces model/firmware support policy, supports dry-run mode, and writes detailed logs + state file.
 - `Verify-SecureBootUpdate.ps1` - Verifies post-apply Secure Boot state and UEFI variable hashes.
+
+## Predictable log/state location
+
+All runtime logs and state artifacts are written under:
+
+- `X:\SecureBootUpdate\logs\`
+
+Key files:
+
+- `Apply-SecureBootUpdate.log`
+- `Verify-SecureBootUpdate.log`
+- `SecureBootUpdateState.json`
+- `Apply-OperationSummary.json`
+
+This predictable path is intended for collection in CI/CD jobs and GitHub Action artifacts.
 
 ## Payload layout expected by `Apply-SecureBootUpdate.ps1`
 
-Place update files under `winpe\\payload\\`:
+Place update files under `winpe\payload\`:
 
+- `manifest.sha256` (**required**)
 - `db.auth` (required)
 - `dbx.auth` (required)
 - `kek.auth` (required)
 - `pk.auth` (optional)
-- `certs\\*.cer|*.crt` (optional vetted certificate imports)
+- `certs\*.cer|*.crt` (optional vetted certificate imports)
 
-> The `.auth` files must be signed, authenticated Secure Boot variable update binaries created and approved by your PK/KEK trust chain process.
+`manifest.sha256` must contain SHA-256 entries for **every payload file that may be executed/imported** (all `.auth` files present and any certificate file present).
+
+## Apply script safety controls
+
+### Dry-run mode
+
+Run validation and compatibility checks without writing firmware variables:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File X:\Apply-SecureBootUpdate.ps1 -WhatIf
+```
+
+(or `-DryRun`)
+
+### Unsupported platform blocking
+
+The script blocks execution when model/firmware requirements are not met unless explicitly overridden:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File X:\Apply-SecureBootUpdate.ps1 -AllowUnsupported
+```
 
 ## Exit codes
 
@@ -28,7 +64,8 @@ Place update files under `winpe\\payload\\`:
 - `10` invalid environment (not UEFI / Secure Boot state unavailable)
 - `20` required payload missing
 - `30` update command failed
-- `40` post-update state creation failed
+- `40` payload manifest verification failed
+- `45` unsupported model/firmware blocked
 - `99` unexpected error
 
 `Verify-SecureBootUpdate.ps1`:

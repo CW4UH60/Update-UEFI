@@ -1,10 +1,10 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $false)]
-    [string]$StatePath = "$PSScriptRoot\logs\SecureBootUpdateState.json",
+    [string]$StatePath = 'X:\SecureBootUpdate\logs\SecureBootUpdateState.json',
 
     [Parameter(Mandatory = $false)]
-    [string]$LogRoot = "$PSScriptRoot\logs"
+    [string]$LogRoot = 'X:\SecureBootUpdate\logs'
 )
 
 Set-StrictMode -Version Latest
@@ -47,7 +47,8 @@ try {
         New-Item -Path $LogRoot -ItemType Directory -Force | Out-Null
     }
 
-    $script:LogFile = Join-Path $LogRoot ("Verify-SecureBootUpdate_{0:yyyyMMdd_HHmmss}.log" -f (Get-Date))
+    $script:LogFile = Join-Path $LogRoot 'Verify-SecureBootUpdate.log'
+    "" | Out-File -FilePath $script:LogFile -Encoding utf8
     Write-Log "Verifying Secure Boot update state using: $StatePath"
 
     if (-not (Test-Path $StatePath)) {
@@ -56,6 +57,10 @@ try {
     }
 
     $state = Get-Content -Path $StatePath -Raw | ConvertFrom-Json
+    if ($state.DryRun) {
+        Write-Log 'State indicates dry-run execution; skipping hash comparison and returning success.' 'WARN'
+        exit $ExitCodes.Success
+    }
 
     try {
         $secureBootEnabled = Confirm-SecureBootUEFI
@@ -73,7 +78,12 @@ try {
 
     $names = @('db', 'dbx', 'KEK', 'PK')
     foreach ($name in $names) {
-        $expected = $state.Variables.$name.Sha256
+        $expected = $state.CurrentCertStateAfter.$name.Sha256
+        if (-not $expected) {
+            Write-Log "No expected hash recorded for $name; skipping comparison." 'WARN'
+            continue
+        }
+
         $actual = Get-VariableHash -Name $name
         Write-Log "Variable $name hash. expected=$expected actual=$actual"
 

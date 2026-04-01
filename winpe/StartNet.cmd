@@ -2,7 +2,7 @@
 wpeinit
 
 set SCRIPT_DIR=%~dp0
-set LOG_ROOT=%SCRIPT_DIR%logs
+set LOG_ROOT=X:\SecureBootUpdate\logs
 if not exist "%LOG_ROOT%" mkdir "%LOG_ROOT%"
 
 powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%Apply-SecureBootUpdate.ps1" -PayloadPath "%SCRIPT_DIR%payload" -LogRoot "%LOG_ROOT%"
