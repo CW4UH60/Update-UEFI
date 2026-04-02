@@ -34,17 +34,54 @@ jobs:
           choco install windows-adk --package-parameters "/Features OptionId.DeploymentTools" -y --no-progress
           choco install windows-adk-winpe -y --no-progress
       - name: Build bootable WinPE ISO
-        shell: cmd
+        shell: pwsh
         run: |
-          copype amd64 C:\WinPE_UEFI
-          Dism /Mount-Image /ImageFile:C:\WinPE_UEFI\media\sources\boot.wim /index:1 /MountDir:C:\WinPE_UEFI\mount
-          Dism /Add-Package /Image:C:\WinPE_UEFI\mount /PackagePath:"%ProgramFiles(x86)%\Windows Kits\10\Assessment and Deployment Kit\Windows Preinstallation Environment\amd64\WinPE_OCs\WinPE-WMI.cab"
-          Dism /Add-Package /Image:C:\WinPE_UEFI\mount /PackagePath:"%ProgramFiles(x86)%\Windows Kits\10\Assessment and Deployment Kit\Windows Preinstallation Environment\amd64\WinPE_OCs\WinPE-NetFX.cab"
-          Dism /Add-Package /Image:C:\WinPE_UEFI\mount /PackagePath:"%ProgramFiles(x86)%\Windows Kits\10\Assessment and Deployment Kit\Windows Preinstallation Environment\amd64\WinPE_OCs\WinPE-Scripting.cab"
-          Dism /Add-Package /Image:C:\WinPE_UEFI\mount /PackagePath:"%ProgramFiles(x86)%\Windows Kits\10\Assessment and Deployment Kit\Windows Preinstallation Environment\amd64\WinPE_OCs\WinPE-PowerShell.cab"
-          Dism /Unmount-Image /MountDir:C:\WinPE_UEFI\mount /Commit
-          xcopy /E /I /Y winpe C:\WinPE_UEFI\media\
-          MakeWinPEMedia /ISO C:\WinPE_UEFI C:\WinPE_UEFI\SecureBootRemediation.iso
+          $ErrorActionPreference = 'Stop'
+          $adkRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Assessment and Deployment Kit'
+          $winPeRoot = Join-Path $adkRoot 'Windows Preinstallation Environment'
+          $copype = Join-Path $winPeRoot 'copype.cmd'
+          $makeWinPeMedia = Join-Path $winPeRoot 'MakeWinPEMedia.cmd'
+
+          if (-not (Test-Path $copype)) {
+            throw "copype.cmd not found at expected path: $copype"
+          }
+
+          if (-not (Test-Path $makeWinPeMedia)) {
+            throw "MakeWinPEMedia.cmd not found at expected path: $makeWinPeMedia"
+          }
+
+          if (Test-Path 'C:\WinPE_UEFI') {
+            Remove-Item -Path 'C:\WinPE_UEFI' -Recurse -Force
+          }
+
+          cmd /c "\"$copype\" amd64 C:\WinPE_UEFI"
+          if ($LASTEXITCODE -ne 0) { throw "copype failed with exit code $LASTEXITCODE" }
+
+          $mountPath = 'C:\WinPE_UEFI\mount'
+          $imagePath = 'C:\WinPE_UEFI\media\sources\boot.wim'
+          $ocRoot = Join-Path $winPeRoot 'amd64\WinPE_OCs'
+
+          & Dism /Mount-Image /ImageFile:$imagePath /index:1 /MountDir:$mountPath
+          if ($LASTEXITCODE -ne 0) { throw "DISM mount failed with exit code $LASTEXITCODE" }
+
+          $packages = @('WinPE-WMI.cab', 'WinPE-NetFX.cab', 'WinPE-Scripting.cab', 'WinPE-PowerShell.cab')
+          foreach ($package in $packages) {
+            $packagePath = Join-Path $ocRoot $package
+            if (-not (Test-Path $packagePath)) {
+              throw "Required WinPE package not found: $packagePath"
+            }
+
+            & Dism /Add-Package /Image:$mountPath /PackagePath:$packagePath
+            if ($LASTEXITCODE -ne 0) { throw "DISM add-package failed for $package with exit code $LASTEXITCODE" }
+          }
+
+          & Dism /Unmount-Image /MountDir:$mountPath /Commit
+          if ($LASTEXITCODE -ne 0) { throw "DISM unmount failed with exit code $LASTEXITCODE" }
+
+          Copy-Item -Path 'winpe\*' -Destination 'C:\WinPE_UEFI\media\' -Recurse -Force
+
+          cmd /c "\"$makeWinPeMedia\" /ISO C:\WinPE_UEFI C:\WinPE_UEFI\SecureBootRemediation.iso"
+          if ($LASTEXITCODE -ne 0) { throw "MakeWinPEMedia failed with exit code $LASTEXITCODE" }
       - name: Upload ISO artifact
         uses: actions/upload-artifact@v4
         with:
