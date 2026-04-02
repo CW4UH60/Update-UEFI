@@ -49,40 +49,48 @@ jobs:
           $copype = Join-Path $winPeRoot 'copype.cmd'
           $makeWinPeMedia = Join-Path $winPeRoot 'MakeWinPEMedia.cmd'
 
-          if (-not (Test-Path $copype)) {
-            throw "copype.cmd not found at expected path: $copype"
-          }
-
-          if (-not (Test-Path $makeWinPeMedia)) {
-            throw "MakeWinPEMedia.cmd not found at expected path: $makeWinPeMedia"
-          }
+          if (-not (Test-Path $copype)) { throw "copype.cmd not found at expected path: $copype" }
+          if (-not (Test-Path $makeWinPeMedia)) { throw "MakeWinPEMedia.cmd not found at expected path: $makeWinPeMedia" }
 
           $preferredArches = @('amd64', 'x64', 'arm64', 'x86')
-          $resolvedArch = $null
-          foreach ($arch in $preferredArches) {
-            if (Test-Path (Join-Path $winPeRoot $arch)) {
-              $resolvedArch = $arch
-              break
-            }
-          }
-
+          $resolvedArch = $preferredArches | Where-Object { Test-Path (Join-Path $winPeRoot $_) } | Select-Object -First 1
           if (-not $resolvedArch) {
             $available = @(Get-ChildItem -Path $winPeRoot -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
             throw "No WinPE architecture folder found under '$winPeRoot'. Found: $($available -join ', ')"
           }
 
-          # copype expects amd64 token even when some installations label folder x64
-          $copypeArch = if ($resolvedArch -eq 'x64') { 'amd64' } else { $resolvedArch }
+          $buildRoot = Join-Path $env:RUNNER_TEMP 'WinPE_UEFI'
+          if (Test-Path $buildRoot) { Remove-Item -Path $buildRoot -Recurse -Force }
 
-          if (Test-Path 'C:\WinPE_UEFI') {
-            Remove-Item -Path 'C:\WinPE_UEFI' -Recurse -Force
+          $tryArches = @()
+          if ($resolvedArch -eq 'x64') {
+            $tryArches = @('amd64', 'x64')
+          } else {
+            $tryArches += $resolvedArch
+            if ($resolvedArch -eq 'amd64') { $tryArches += 'x64' }
+          }
+          $tryArches += @('arm64', 'x86') | Where-Object { $_ -notin $tryArches }
+
+          $copypeSucceeded = $false
+          foreach ($archToken in $tryArches) {
+            Write-Host "Trying copype architecture token: $archToken"
+            & $copype $archToken $buildRoot
+            if ($LASTEXITCODE -eq 0) {
+              $copypeSucceeded = $true
+              $copypeArch = $archToken
+              break
+            }
+
+            Write-Warning "copype failed for arch token '$archToken' with exit code $LASTEXITCODE"
+            if (Test-Path $buildRoot) { Remove-Item -Path $buildRoot -Recurse -Force }
           }
 
-          & $copype $copypeArch C:\WinPE_UEFI
-          if ($LASTEXITCODE -ne 0) { throw "copype failed with exit code $LASTEXITCODE (arch=$copypeArch, root=$winPeRoot)" }
+          if (-not $copypeSucceeded) {
+            throw "copype failed for all architecture tokens: $($tryArches -join ', '). WinPE root: $winPeRoot"
+          }
 
-          $mountPath = 'C:\WinPE_UEFI\mount'
-          $imagePath = 'C:\WinPE_UEFI\media\sources\boot.wim'
+          $mountPath = Join-Path $buildRoot 'mount'
+          $imagePath = Join-Path $buildRoot 'media\sources\boot.wim'
           $ocRoot = Join-Path $winPeRoot "$resolvedArch\WinPE_OCs"
 
           & Dism /Mount-Image /ImageFile:$imagePath /index:1 /MountDir:$mountPath
@@ -91,9 +99,7 @@ jobs:
           $packages = @('WinPE-WMI.cab', 'WinPE-NetFX.cab', 'WinPE-Scripting.cab', 'WinPE-PowerShell.cab')
           foreach ($package in $packages) {
             $packagePath = Join-Path $ocRoot $package
-            if (-not (Test-Path $packagePath)) {
-              throw "Required WinPE package not found: $packagePath"
-            }
+            if (-not (Test-Path $packagePath)) { throw "Required WinPE package not found: $packagePath" }
 
             & Dism /Add-Package /Image:$mountPath /PackagePath:$packagePath
             if ($LASTEXITCODE -ne 0) { throw "DISM add-package failed for $package with exit code $LASTEXITCODE" }
@@ -102,12 +108,13 @@ jobs:
           & Dism /Unmount-Image /MountDir:$mountPath /Commit
           if ($LASTEXITCODE -ne 0) { throw "DISM unmount failed with exit code $LASTEXITCODE" }
 
-          Copy-Item -Path 'winpe\*' -Destination 'C:\WinPE_UEFI\media\' -Recurse -Force
+          Copy-Item -Path 'winpe\*' -Destination (Join-Path $buildRoot 'media\') -Recurse -Force
 
-          & $makeWinPeMedia /ISO C:\WinPE_UEFI C:\WinPE_UEFI\SecureBootRemediation.iso
+          $isoPath = Join-Path $buildRoot 'SecureBootRemediation.iso'
+          & $makeWinPeMedia /ISO $buildRoot $isoPath
           if ($LASTEXITCODE -ne 0) { throw "MakeWinPEMedia failed with exit code $LASTEXITCODE" }
       - name: Upload ISO artifact
         uses: actions/upload-artifact@v6
         with:
           name: SecureBootRemediation-iso
-          path: C:\WinPE_UEFI\SecureBootRemediation.iso
+          path: ${{ runner.temp }}\WinPE_UEFI\SecureBootRemediation.iso
