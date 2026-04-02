@@ -117,7 +117,7 @@ function Test-ManifestEntry {
         [Parameter(Mandatory = $true)][string]$FilePath
     )
 
-    $relativePath = [System.IO.Path]::GetRelativePath($PayloadRoot, $FilePath).Replace('\\', '/').ToLowerInvariant()
+    $relativePath = ([System.IO.Path]::GetRelativePath($PayloadRoot, $FilePath) -replace '\\', '/').ToLowerInvariant()
     if (-not $Manifest.ContainsKey($relativePath)) {
         throw "Manifest entry missing for payload file: $relativePath"
     }
