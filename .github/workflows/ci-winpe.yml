@@ -54,7 +54,7 @@ jobs:
             Remove-Item -Path 'C:\WinPE_UEFI' -Recurse -Force
           }
 
-          cmd /c "\"$copype\" amd64 C:\WinPE_UEFI"
+          & $copype amd64 C:\WinPE_UEFI
           if ($LASTEXITCODE -ne 0) { throw "copype failed with exit code $LASTEXITCODE" }
 
           $mountPath = 'C:\WinPE_UEFI\mount'
@@ -80,7 +80,7 @@ jobs:
 
           Copy-Item -Path 'winpe\*' -Destination 'C:\WinPE_UEFI\media\' -Recurse -Force
 
-          cmd /c "\"$makeWinPeMedia\" /ISO C:\WinPE_UEFI C:\WinPE_UEFI\SecureBootRemediation.iso"
+          & $makeWinPeMedia /ISO C:\WinPE_UEFI C:\WinPE_UEFI\SecureBootRemediation.iso
           if ($LASTEXITCODE -ne 0) { throw "MakeWinPEMedia failed with exit code $LASTEXITCODE" }
       - name: Upload ISO artifact
         uses: actions/upload-artifact@v4
