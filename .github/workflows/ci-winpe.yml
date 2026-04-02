@@ -1,8 +1,5 @@
 name: WinPE CI
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 on:
   push:
     branches: ["**"]
@@ -12,7 +9,7 @@ jobs:
   unit-tests:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Pester
         shell: pwsh
         run: |
@@ -27,7 +24,7 @@ jobs:
     runs-on: windows-latest
     needs: unit-tests
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install ADK Deployment Tools + WinPE Addon
         shell: powershell
         run: |
@@ -37,7 +34,17 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $adkRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Assessment and Deployment Kit'
+
+          $candidateAdkRoots = @(
+            (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Assessment and Deployment Kit'),
+            (Join-Path $env:ProgramFiles 'Windows Kits\10\Assessment and Deployment Kit')
+          ) | Get-Unique
+
+          $adkRoot = $candidateAdkRoots | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $adkRoot) {
+            throw "ADK root not found. Checked: $($candidateAdkRoots -join '; ')"
+          }
+
           $winPeRoot = Join-Path $adkRoot 'Windows Preinstallation Environment'
           $copype = Join-Path $winPeRoot 'copype.cmd'
           $makeWinPeMedia = Join-Path $winPeRoot 'MakeWinPEMedia.cmd'
@@ -50,16 +57,33 @@ jobs:
             throw "MakeWinPEMedia.cmd not found at expected path: $makeWinPeMedia"
           }
 
+          $preferredArches = @('amd64', 'x64', 'arm64', 'x86')
+          $resolvedArch = $null
+          foreach ($arch in $preferredArches) {
+            if (Test-Path (Join-Path $winPeRoot $arch)) {
+              $resolvedArch = $arch
+              break
+            }
+          }
+
+          if (-not $resolvedArch) {
+            $available = @(Get-ChildItem -Path $winPeRoot -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
+            throw "No WinPE architecture folder found under '$winPeRoot'. Found: $($available -join ', ')"
+          }
+
+          # copype expects amd64 token even when some installations label folder x64
+          $copypeArch = if ($resolvedArch -eq 'x64') { 'amd64' } else { $resolvedArch }
+
           if (Test-Path 'C:\WinPE_UEFI') {
             Remove-Item -Path 'C:\WinPE_UEFI' -Recurse -Force
           }
 
-          & $copype amd64 C:\WinPE_UEFI
-          if ($LASTEXITCODE -ne 0) { throw "copype failed with exit code $LASTEXITCODE" }
+          & $copype $copypeArch C:\WinPE_UEFI
+          if ($LASTEXITCODE -ne 0) { throw "copype failed with exit code $LASTEXITCODE (arch=$copypeArch, root=$winPeRoot)" }
 
           $mountPath = 'C:\WinPE_UEFI\mount'
           $imagePath = 'C:\WinPE_UEFI\media\sources\boot.wim'
-          $ocRoot = Join-Path $winPeRoot 'amd64\WinPE_OCs'
+          $ocRoot = Join-Path $winPeRoot "$resolvedArch\WinPE_OCs"
 
           & Dism /Mount-Image /ImageFile:$imagePath /index:1 /MountDir:$mountPath
           if ($LASTEXITCODE -ne 0) { throw "DISM mount failed with exit code $LASTEXITCODE" }
@@ -83,7 +107,7 @@ jobs:
           & $makeWinPeMedia /ISO C:\WinPE_UEFI C:\WinPE_UEFI\SecureBootRemediation.iso
           if ($LASTEXITCODE -ne 0) { throw "MakeWinPEMedia failed with exit code $LASTEXITCODE" }
       - name: Upload ISO artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: SecureBootRemediation-iso
           path: C:\WinPE_UEFI\SecureBootRemediation.iso
