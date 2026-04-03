@@ -52,11 +52,16 @@ jobs:
           if (-not (Test-Path $copype)) { throw "copype.cmd not found at expected path: $copype" }
           if (-not (Test-Path $makeWinPeMedia)) { throw "MakeWinPEMedia.cmd not found at expected path: $makeWinPeMedia" }
 
+          $env:WinPERoot = $winPeRoot
+
           $preferredArches = @('amd64', 'x64', 'arm64', 'x86')
-          $resolvedArch = $preferredArches | Where-Object { Test-Path (Join-Path $winPeRoot $_) } | Select-Object -First 1
+          $availableArches = $preferredArches | Where-Object {
+            Test-Path (Join-Path $winPeRoot (Join-Path $_ 'Media'))
+          }
+          $resolvedArch = $availableArches | Select-Object -First 1
           if (-not $resolvedArch) {
             $available = @(Get-ChildItem -Path $winPeRoot -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
-            throw "No WinPE architecture folder found under '$winPeRoot'. Found: $($available -join ', ')"
+            throw "No valid WinPE architecture Media folders found under '$winPeRoot'. Found dirs: $($available -join ', '). Ensure WinPE Add-on installed correctly."
           }
 
           $buildRoot = Join-Path $env:RUNNER_TEMP 'WinPE_UEFI'
@@ -69,7 +74,7 @@ jobs:
             $tryArches += $resolvedArch
             if ($resolvedArch -eq 'amd64') { $tryArches += 'x64' }
           }
-          $tryArches += @('arm64', 'x86') | Where-Object { $_ -notin $tryArches }
+          $tryArches += $availableArches | Where-Object { $_ -notin $tryArches }
 
           $copypeSucceeded = $false
           foreach ($archToken in $tryArches) {
