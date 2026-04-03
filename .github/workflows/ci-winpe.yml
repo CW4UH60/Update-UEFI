@@ -31,93 +31,81 @@ jobs:
           choco install windows-adk --package-parameters "/Features OptionId.DeploymentTools" -y --no-progress
           choco install windows-adk-winpe -y --no-progress
       - name: Build bootable WinPE ISO
-        shell: pwsh
+        shell: cmd
         run: |
-          $ErrorActionPreference = 'Stop'
+          @echo on
+          setlocal enableextensions
 
-          $candidateAdkRoots = @(
-            (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Assessment and Deployment Kit'),
-            (Join-Path $env:ProgramFiles 'Windows Kits\10\Assessment and Deployment Kit')
-          ) | Get-Unique
+          set "ADKROOT=%ProgramFiles(x86)%\Windows Kits\10\Assessment and Deployment Kit"
+          if not exist "%ADKROOT%\Deployment Tools\DandISetEnv.bat" set "ADKROOT=%ProgramFiles%\Windows Kits\10\Assessment and Deployment Kit"
+          if not exist "%ADKROOT%\Deployment Tools\DandISetEnv.bat" (
+            echo ADK deployment tools environment script not found.
+            exit /b 1
+          )
 
-          $adkRoot = $candidateAdkRoots | Where-Object { Test-Path $_ } | Select-Object -First 1
-          if (-not $adkRoot) {
-            throw "ADK root not found. Checked: $($candidateAdkRoots -join '; ')"
-          }
+          call "%ADKROOT%\Deployment Tools\DandISetEnv.bat"
+          if errorlevel 1 (
+            echo Failed to initialize ADK deployment environment.
+            exit /b 1
+          )
 
-          $winPeRoot = Join-Path $adkRoot 'Windows Preinstallation Environment'
-          $copype = Join-Path $winPeRoot 'copype.cmd'
-          $makeWinPeMedia = Join-Path $winPeRoot 'MakeWinPEMedia.cmd'
+          set "WINPEROOT=%ADKROOT%\Windows Preinstallation Environment"
+          if not exist "%WINPEROOT%\copype.cmd" (
+            echo copype.cmd not found in %WINPEROOT%.
+            exit /b 1
+          )
+          if not exist "%WINPEROOT%\MakeWinPEMedia.cmd" (
+            echo MakeWinPEMedia.cmd not found in %WINPEROOT%.
+            exit /b 1
+          )
 
-          if (-not (Test-Path $copype)) { throw "copype.cmd not found at expected path: $copype" }
-          if (-not (Test-Path $makeWinPeMedia)) { throw "MakeWinPEMedia.cmd not found at expected path: $makeWinPeMedia" }
+          set "BUILDROOT=%RUNNER_TEMP%\WinPE_UEFI"
+          if exist "%BUILDROOT%" rmdir /s /q "%BUILDROOT%"
 
-          $env:WinPERoot = $winPeRoot
+          set "COPYPE_ARCH="
+          call "%WINPEROOT%\copype.cmd" amd64 "%BUILDROOT%"
+          if not errorlevel 1 set "COPYPE_ARCH=amd64"
 
-          $preferredArches = @('amd64', 'x64', 'arm64', 'x86')
-          $availableArches = $preferredArches | Where-Object {
-            Test-Path (Join-Path $winPeRoot (Join-Path $_ 'Media'))
-          }
-          $resolvedArch = $availableArches | Select-Object -First 1
-          if (-not $resolvedArch) {
-            $available = @(Get-ChildItem -Path $winPeRoot -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
-            throw "No valid WinPE architecture Media folders found under '$winPeRoot'. Found dirs: $($available -join ', '). Ensure WinPE Add-on installed correctly."
-          }
+          if "%COPYPE_ARCH%"=="" (
+            call "%WINPEROOT%\copype.cmd" arm64 "%BUILDROOT%"
+            if not errorlevel 1 set "COPYPE_ARCH=arm64"
+          )
 
-          $buildRoot = Join-Path $env:RUNNER_TEMP 'WinPE_UEFI'
-          if (Test-Path $buildRoot) { Remove-Item -Path $buildRoot -Recurse -Force }
+          if "%COPYPE_ARCH%"=="" (
+            call "%WINPEROOT%\copype.cmd" x86 "%BUILDROOT%"
+            if not errorlevel 1 set "COPYPE_ARCH=x86"
+          )
 
-          $tryArches = @()
-          if ($resolvedArch -eq 'x64') {
-            $tryArches = @('amd64', 'x64')
-          } else {
-            $tryArches += $resolvedArch
-            if ($resolvedArch -eq 'amd64') { $tryArches += 'x64' }
-          }
-          $tryArches += $availableArches | Where-Object { $_ -notin $tryArches }
+          if "%COPYPE_ARCH%"=="" (
+            echo copype failed for all supported architecture tokens.
+            exit /b 1
+          )
 
-          $copypeSucceeded = $false
-          foreach ($archToken in $tryArches) {
-            Write-Host "Trying copype architecture token: $archToken"
-            & $copype $archToken $buildRoot
-            if ($LASTEXITCODE -eq 0) {
-              $copypeSucceeded = $true
-              $copypeArch = $archToken
-              break
-            }
+          set "MOUNTPATH=%BUILDROOT%\mount"
+          set "IMAGEPATH=%BUILDROOT%\media\sources\boot.wim"
+          set "OCROOT=%WINPEROOT%\%COPYPE_ARCH%\WinPE_OCs"
 
-            Write-Warning "copype failed for arch token '$archToken' with exit code $LASTEXITCODE"
-            if (Test-Path $buildRoot) { Remove-Item -Path $buildRoot -Recurse -Force }
-          }
+          if not exist "%OCROOT%\WinPE-WMI.cab" (
+            echo Expected WinPE optional component path missing: %OCROOT%
+            exit /b 1
+          )
 
-          if (-not $copypeSucceeded) {
-            throw "copype failed for all architecture tokens: $($tryArches -join ', '). WinPE root: $winPeRoot"
-          }
+          Dism /Mount-Image /ImageFile:"%IMAGEPATH%" /index:1 /MountDir:"%MOUNTPATH%"
+          if errorlevel 1 exit /b 1
 
-          $mountPath = Join-Path $buildRoot 'mount'
-          $imagePath = Join-Path $buildRoot 'media\sources\boot.wim'
-          $ocRoot = Join-Path $winPeRoot "$resolvedArch\WinPE_OCs"
+          for %%P in (WinPE-WMI.cab WinPE-NetFX.cab WinPE-Scripting.cab WinPE-PowerShell.cab) do (
+            Dism /Add-Package /Image:"%MOUNTPATH%" /PackagePath:"%OCROOT%\%%P"
+            if errorlevel 1 exit /b 1
+          )
 
-          & Dism /Mount-Image /ImageFile:$imagePath /index:1 /MountDir:$mountPath
-          if ($LASTEXITCODE -ne 0) { throw "DISM mount failed with exit code $LASTEXITCODE" }
+          Dism /Unmount-Image /MountDir:"%MOUNTPATH%" /Commit
+          if errorlevel 1 exit /b 1
 
-          $packages = @('WinPE-WMI.cab', 'WinPE-NetFX.cab', 'WinPE-Scripting.cab', 'WinPE-PowerShell.cab')
-          foreach ($package in $packages) {
-            $packagePath = Join-Path $ocRoot $package
-            if (-not (Test-Path $packagePath)) { throw "Required WinPE package not found: $packagePath" }
+          xcopy /E /I /Y winpe "%BUILDROOT%\media\"
+          if errorlevel 1 exit /b 1
 
-            & Dism /Add-Package /Image:$mountPath /PackagePath:$packagePath
-            if ($LASTEXITCODE -ne 0) { throw "DISM add-package failed for $package with exit code $LASTEXITCODE" }
-          }
-
-          & Dism /Unmount-Image /MountDir:$mountPath /Commit
-          if ($LASTEXITCODE -ne 0) { throw "DISM unmount failed with exit code $LASTEXITCODE" }
-
-          Copy-Item -Path 'winpe\*' -Destination (Join-Path $buildRoot 'media\') -Recurse -Force
-
-          $isoPath = Join-Path $buildRoot 'SecureBootRemediation.iso'
-          & $makeWinPeMedia /ISO $buildRoot $isoPath
-          if ($LASTEXITCODE -ne 0) { throw "MakeWinPEMedia failed with exit code $LASTEXITCODE" }
+          call "%WINPEROOT%\MakeWinPEMedia.cmd" /ISO "%BUILDROOT%" "%BUILDROOT%\SecureBootRemediation.iso"
+          if errorlevel 1 exit /b 1
       - name: Upload ISO artifact
         uses: actions/upload-artifact@v6
         with:
