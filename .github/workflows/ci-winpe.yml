@@ -38,26 +38,14 @@ jobs:
 
           set "ADKROOT=%ProgramFiles(x86)%\Windows Kits\10\Assessment and Deployment Kit"
           if not exist "%ADKROOT%\Deployment Tools\DandISetEnv.bat" set "ADKROOT=%ProgramFiles%\Windows Kits\10\Assessment and Deployment Kit"
-          if not exist "%ADKROOT%\Deployment Tools\DandISetEnv.bat" (
-            echo ADK deployment tools environment script not found.
-            exit /b 1
-          )
+          if not exist "%ADKROOT%\Deployment Tools\DandISetEnv.bat" goto :no_adk
 
           call "%ADKROOT%\Deployment Tools\DandISetEnv.bat"
-          if errorlevel 1 (
-            echo Failed to initialize ADK deployment environment.
-            exit /b 1
-          )
+          if errorlevel 1 goto :fail_dandi
 
           set "WINPEROOT=%ADKROOT%\Windows Preinstallation Environment"
-          if not exist "%WINPEROOT%\copype.cmd" (
-            echo copype.cmd not found in %WINPEROOT%.
-            exit /b 1
-          )
-          if not exist "%WINPEROOT%\MakeWinPEMedia.cmd" (
-            echo MakeWinPEMedia.cmd not found in %WINPEROOT%.
-            exit /b 1
-          )
+          if not exist "%WINPEROOT%\copype.cmd" goto :missing_copype
+          if not exist "%WINPEROOT%\MakeWinPEMedia.cmd" goto :missing_makewinpemedia
 
           set "BUILDROOT=%RUNNER_TEMP%\WinPE_UEFI"
           if exist "%BUILDROOT%" rmdir /s /q "%BUILDROOT%"
@@ -65,47 +53,63 @@ jobs:
           set "COPYPE_ARCH="
           call "%WINPEROOT%\copype.cmd" amd64 "%BUILDROOT%"
           if not errorlevel 1 set "COPYPE_ARCH=amd64"
-
-          if "%COPYPE_ARCH%"=="" (
-            call "%WINPEROOT%\copype.cmd" arm64 "%BUILDROOT%"
-            if not errorlevel 1 set "COPYPE_ARCH=arm64"
-          )
-
-          if "%COPYPE_ARCH%"=="" (
-            call "%WINPEROOT%\copype.cmd" x86 "%BUILDROOT%"
-            if not errorlevel 1 set "COPYPE_ARCH=x86"
-          )
-
-          if "%COPYPE_ARCH%"=="" (
-            echo copype failed for all supported architecture tokens.
-            exit /b 1
-          )
+          if "%COPYPE_ARCH%"=="" call "%WINPEROOT%\copype.cmd" arm64 "%BUILDROOT%"
+          if "%COPYPE_ARCH%"=="" if not errorlevel 1 set "COPYPE_ARCH=arm64"
+          if "%COPYPE_ARCH%"=="" call "%WINPEROOT%\copype.cmd" x86 "%BUILDROOT%"
+          if "%COPYPE_ARCH%"=="" if not errorlevel 1 set "COPYPE_ARCH=x86"
+          if "%COPYPE_ARCH%"=="" goto :copype_failed
 
           set "MOUNTPATH=%BUILDROOT%\mount"
           set "IMAGEPATH=%BUILDROOT%\media\sources\boot.wim"
           set "OCROOT=%WINPEROOT%\%COPYPE_ARCH%\WinPE_OCs"
 
-          if not exist "%OCROOT%\WinPE-WMI.cab" (
-            echo Expected WinPE optional component path missing: %OCROOT%
-            exit /b 1
-          )
+          if not exist "%OCROOT%\WinPE-WMI.cab" goto :missing_oc
 
           Dism /Mount-Image /ImageFile:"%IMAGEPATH%" /index:1 /MountDir:"%MOUNTPATH%"
-          if errorlevel 1 exit /b 1
+          if errorlevel 1 goto :fail
 
           for %%P in (WinPE-WMI.cab WinPE-NetFX.cab WinPE-Scripting.cab WinPE-PowerShell.cab) do (
             Dism /Add-Package /Image:"%MOUNTPATH%" /PackagePath:"%OCROOT%\%%P"
-            if errorlevel 1 exit /b 1
+            if errorlevel 1 goto :fail
           )
 
           Dism /Unmount-Image /MountDir:"%MOUNTPATH%" /Commit
-          if errorlevel 1 exit /b 1
+          if errorlevel 1 goto :fail
 
           xcopy /E /I /Y winpe "%BUILDROOT%\media\"
-          if errorlevel 1 exit /b 1
+          if errorlevel 1 goto :fail
 
           call "%WINPEROOT%\MakeWinPEMedia.cmd" /ISO "%BUILDROOT%" "%BUILDROOT%\SecureBootRemediation.iso"
-          if errorlevel 1 exit /b 1
+          if errorlevel 1 goto :fail
+
+          goto :eof
+
+          :no_adk
+          echo ADK deployment tools environment script not found.
+          exit /b 1
+
+          :fail_dandi
+          echo Failed to initialize ADK deployment environment.
+          exit /b 1
+
+          :missing_copype
+          echo copype.cmd not found in %WINPEROOT%.
+          exit /b 1
+
+          :missing_makewinpemedia
+          echo MakeWinPEMedia.cmd not found in %WINPEROOT%.
+          exit /b 1
+
+          :copype_failed
+          echo copype failed for all supported architecture tokens.
+          exit /b 1
+
+          :missing_oc
+          echo Expected WinPE optional component path missing: %OCROOT%
+          exit /b 1
+
+          :fail
+          exit /b 1
       - name: Upload ISO artifact
         uses: actions/upload-artifact@v6
         with:
