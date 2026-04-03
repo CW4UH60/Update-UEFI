@@ -47,6 +47,7 @@ jobs:
           if not exist "%WINPEROOT%\copype.cmd" goto :missing_copype
           if not exist "%WINPEROOT%\MakeWinPEMedia.cmd" goto :missing_makewinpemedia
 
+          set "REPOROOT=%GITHUB_WORKSPACE%"
           set "BUILDROOT=%RUNNER_TEMP%\WinPE_UEFI"
           if exist "%BUILDROOT%" rmdir /s /q "%BUILDROOT%"
 
@@ -76,7 +77,7 @@ jobs:
           Dism /Unmount-Image /MountDir:"%MOUNTPATH%" /Commit
           if errorlevel 1 goto :fail
 
-          xcopy /E /I /Y winpe "%BUILDROOT%\media\"
+          xcopy /E /I /Y "%REPOROOT%\winpe" "%BUILDROOT%\media\"
           if errorlevel 1 goto :fail
 
           call "%WINPEROOT%\MakeWinPEMedia.cmd" /ISO "%BUILDROOT%" "%BUILDROOT%\SecureBootRemediation.iso"
