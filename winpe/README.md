@@ -135,3 +135,32 @@ MakeWinPEMedia /ISO C:\WinPE_UEFI C:\WinPE_UEFI\SecureBootRemediation.iso
 :: 7) (Optional) Create bootable USB directly
 MakeWinPEMedia /UFD C:\WinPE_UEFI F:
 ```
+
+
+## Unit tests
+
+Pester tests are provided under `tests/` and cover payload manifest parsing/validation, platform policy enforcement, and verification-path outcomes.
+
+Run locally:
+
+```powershell
+Invoke-Pester -Path .\tests -Output Detailed
+```
+
+## GitHub Actions automation
+
+Workflow: `.github/workflows/ci-winpe.yml`
+
+- Runs Pester unit tests.
+- Builds a bootable WinPE ISO using ADK + WinPE add-on tooling.
+- Publishes `SecureBootRemediation.iso` as an Actions artifact.
+
+## Exporting 2023 certificates from a Windows VM
+
+If your validation environment includes a Windows VM, export certificates whose validity range includes 2023:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\Export-2023Certificates.ps1 -Destination .\winpe\payload\certs
+```
+
+Then regenerate `manifest.sha256` before running apply/verify scripts.

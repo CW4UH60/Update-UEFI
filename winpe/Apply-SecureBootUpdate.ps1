@@ -117,7 +117,7 @@ function Test-ManifestEntry {
         [Parameter(Mandatory = $true)][string]$FilePath
     )
 
-    $relativePath = [System.IO.Path]::GetRelativePath($PayloadRoot, $FilePath).Replace('\\', '/').ToLowerInvariant()
+    $relativePath = ([System.IO.Path]::GetRelativePath($PayloadRoot, $FilePath) -replace '\\', '/').ToLowerInvariant()
     if (-not $Manifest.ContainsKey($relativePath)) {
         throw "Manifest entry missing for payload file: $relativePath"
     }
@@ -213,6 +213,7 @@ function Get-CertState {
     return $state
 }
 
+function Invoke-ApplySecureBootUpdate {
 $operationResults = New-Object System.Collections.Generic.List[object]
 $isDryRun = [bool]($DryRun -or $WhatIfPreference)
 $runTimestamp = Get-Date
@@ -234,7 +235,7 @@ try {
 
     if (-not (Test-Path $PayloadPath)) {
         Write-Log "Payload folder not found: $PayloadPath" 'ERROR'
-        exit $ExitCodes.PayloadMissing
+        return $ExitCodes.PayloadMissing
     }
 
     $platformInfo = Get-PlatformInfo
@@ -250,14 +251,14 @@ try {
     }
     catch {
         Write-Log "Unsupported platform: $($_.Exception.Message)" 'ERROR'
-        exit $ExitCodes.UnsupportedPlatform
+        return $ExitCodes.UnsupportedPlatform
     }
 
     $firmwareMode = Get-FirmwareMode
     Write-Log "Detected firmware mode: $firmwareMode"
     if ($firmwareMode -ne 'UEFI') {
         Write-Log 'System is not running in UEFI mode; cannot apply Secure Boot variable updates.' 'ERROR'
-        exit $ExitCodes.InvalidEnvironment
+        return $ExitCodes.InvalidEnvironment
     }
 
     try {
@@ -266,7 +267,7 @@ try {
     }
     catch {
         Write-Log "Unable to query Secure Boot state: $($_.Exception.Message)" 'ERROR'
-        exit $ExitCodes.InvalidEnvironment
+        return $ExitCodes.InvalidEnvironment
     }
 
     $preState = Get-CertState
@@ -290,7 +291,7 @@ try {
             }
 
             Write-Log "Required payload missing for $($item.Name): $filePath" 'ERROR'
-            exit $ExitCodes.PayloadMissing
+            return $ExitCodes.PayloadMissing
         }
 
         try {
@@ -301,7 +302,7 @@ try {
         catch {
             Write-Log "Manifest validation failed for $($item.Name): $($_.Exception.Message)" 'ERROR'
             $operationResults.Add([ordered]@{ Step = $item.Name; Action = 'ManifestValidate'; Result = 'Failed'; File = $item.File; Error = $_.Exception.Message })
-            exit $ExitCodes.VerificationFailed
+            return $ExitCodes.VerificationFailed
         }
 
         if ($isDryRun) {
@@ -319,7 +320,7 @@ try {
         catch {
             Write-Log "Failed to apply $($item.Name) from $filePath. Error: $($_.Exception.Message)" 'ERROR'
             $operationResults.Add([ordered]@{ Step = $item.Name; Action = 'Set-SecureBootUEFI'; Result = 'Failed'; File = $item.File; Error = $_.Exception.Message })
-            exit $ExitCodes.UpdateFailed
+            return $ExitCodes.UpdateFailed
         }
     }
 
@@ -335,7 +336,7 @@ try {
             catch {
                 Write-Log "Manifest validation failed for certificate $($certFile.FullName): $($_.Exception.Message)" 'ERROR'
                 $operationResults.Add([ordered]@{ Step = 'TrustedPublisherCert'; Action = 'ManifestValidate'; Result = 'Failed'; File = $certFile.Name; Error = $_.Exception.Message })
-                exit $ExitCodes.VerificationFailed
+                return $ExitCodes.VerificationFailed
             }
 
             if ($isDryRun) {
@@ -352,7 +353,7 @@ try {
             catch {
                 Write-Log "Certificate import failed for $($certFile.FullName): $($_.Exception.Message)" 'ERROR'
                 $operationResults.Add([ordered]@{ Step = 'TrustedPublisherCert'; Action = 'certutil -addstore'; Result = 'Failed'; File = $certFile.Name; Error = $_.Exception.Message })
-                exit $ExitCodes.UpdateFailed
+                return $ExitCodes.UpdateFailed
             }
         }
     }
@@ -380,12 +381,18 @@ try {
     Write-Log "Wrote operation summary: $summaryPath"
 
     Write-Log 'Secure Boot remediation completed successfully.'
-    exit $ExitCodes.Success
+    return $ExitCodes.Success
 }
 catch {
     if ($script:LocalLogFile) {
         Write-Log "Unexpected error: $($_.Exception.Message)" 'ERROR'
     }
 
-    exit $ExitCodes.UnexpectedError
+    return $ExitCodes.UnexpectedError
+}
+
+}
+
+if ($MyInvocation.InvocationName -ne '.') {
+    exit (Invoke-ApplySecureBootUpdate)
 }
